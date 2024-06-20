@@ -4,6 +4,7 @@
 *.dll
 *.so
 *.dylib
+redborder-mem2incident
 
 # Test binary, built with `go test -c`
 *.test
