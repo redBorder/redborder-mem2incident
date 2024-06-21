@@ -45,56 +45,20 @@ func readConfig(configFile string) (*Config, error) {
   return &config, nil
 }
 
-// Function to get all keys from Memcached
-func getAllKeys(memcachedServer string) ([]string, error) {
-  conn, err := net.Dial("tcp", memcachedServer)
-  if err != nil {
-    return nil, fmt.Errorf("failed to connect to memcached: %v", err)
-  }
-  defer conn.Close()
-
-  // Use "stats items" to get a list of slabs
-  fmt.Fprintf(conn, "stats items\n")
-  scanner := bufio.NewScanner(conn)
-  slabs := make(map[int]int)
-
-  for scanner.Scan() {
-    line := scanner.Text()
-    if strings.HasPrefix(line, "STAT items:") {
-      var slabID, numberOfItems int
-      fmt.Sscanf(line, "STAT items:%d:number %d", &slabID, &numberOfItems)
-      slabs[slabID] = numberOfItems
-    } else if strings.HasPrefix(line, "END") {
-      break
+// Function to clean up and validate the value obtained from Memcached
+func cleanValue(value []byte) string {
+  // Convert to string and trim any whitespace or null characters
+  cleaned := strings.TrimSpace(string(value))
+  // Remove any null characters
+  cleaned = strings.ReplaceAll(cleaned, "\x00", "")
+  // Remove any non-ASCII characters (optional)
+  cleaned = strings.Map(func(r rune) rune {
+    if r > 127 {
+      return -1
     }
-  }
-
-  if err := scanner.Err(); err != nil {
-    return nil, fmt.Errorf("error reading slabs: %v", err)
-  }
-
-  // Get keys from each slab
-  keys := []string{}
-  for slabID := range slabs {
-    fmt.Fprintf(conn, "stats cachedump %d 0\n", slabID)
-    scanner := bufio.NewScanner(conn)
-    for scanner.Scan() {
-      line := scanner.Text()
-      if strings.HasPrefix(line, "ITEM") {
-        var key string
-        fmt.Sscanf(line, "ITEM %s", &key)
-        keys = append(keys, key)
-      } else if strings.HasPrefix(line, "END") {
-        break
-      }
-    }
-
-    if err := scanner.Err(); err != nil {
-      return nil, fmt.Errorf("error reading keys from slab %d: %v", slabID, err)
-    }
-  }
-
-  return keys, nil
+    return r
+  }, cleaned)
+  return cleaned
 }
 
 func main() {
@@ -110,21 +74,21 @@ func main() {
     log.Fatalf("Error reading config: %v", err)
   }
 
+  // Create a new Memcached client
+  mc := memcache.New(config.MemcachedServer)
+
   // Infinite loop to keep the service running
   for {
     // Get all keys from Memcached
-    keys, err := getAllKeys(config.MemcachedServer)
+    keys, err := getAllKeysFromMemcached(config.MemcachedServer)
     if err != nil {
       log.Printf("Error getting keys: %v", err)
       continue
     }
 
-    // Connect to Memcached
-    mc := memcache.New(config.MemcachedServer)
-
     for _, key := range keys {
       // Check if the key matches the pattern
-      if match, _ := regexp.MatchString(`^rbincident_([a-fA-F0-9\-]+)_name_([a-fA-F0-9\-]+)$`, key); match {
+      if match, _ := regexp.MatchString(`^rbincident_([a-fA-F0-9\-]+)_incident_([a-fA-F0-9\-]+)$`, key); match {
         // Get the value from Memcached
         item, err := mc.Get(key)
         if err != nil {
@@ -132,13 +96,26 @@ func main() {
           continue
         }
 
-        incidentName := string(item.Value)
-        log.Printf("Fetched incident name: %s", incidentName) // Log the fetched name
+        // Clean and verify the value
+        log.Printf("Non cleaned value: %s", item.Value)
 
-        incidentName = cleanName(incidentName)
+        // Clean and verify the value
+        cleanedValue := cleanValue(item.Value)
+        log.Printf("Cleaned value: %s", cleanedValue)
+
+        // Parse the JSON from Memcached
+        var incidentData map[string]interface{}
+        err = json.Unmarshal([]byte(cleanedValue), &incidentData)
+        if err != nil {
+          log.Printf("Error parsing JSON for key %s: %v", key, err)
+          continue
+        }
+
+        // Add auth_token to the payload
+        incidentData["auth_token"] = config.AuthToken
 
         // Call the Rails API to create the incident
-        created, err := createIncident(config.ApiEndpoint, incidentName, config.InsecureSkipVerify, config.AuthToken)
+        created, err := createIncident(config.ApiEndpoint, incidentData, config.InsecureSkipVerify)
         if err != nil {
           log.Printf("Error creating incident for key %s: %v", key, err)
           continue
@@ -162,24 +139,67 @@ func main() {
   }
 }
 
+// getAllKeysFromMemcached retrieves all keys from Memcached using a direct TCP connection
+func getAllKeysFromMemcached(memcachedServer string) ([]string, error) {
+  conn, err := net.Dial("tcp", memcachedServer)
+  if err != nil {
+    return nil, fmt.Errorf("failed to connect to memcached: %v", err)
+  }
+  defer conn.Close()
+
+  // Get the list of slabs
+  fmt.Fprintf(conn, "stats items\n")
+  scanner := bufio.NewScanner(conn)
+  slabs := make(map[int]int)
+  for scanner.Scan() {
+    line := scanner.Text()
+    if strings.HasPrefix(line, "STAT items:") {
+      var slabID, numberOfItems int
+      fmt.Sscanf(line, "STAT items:%d:number %d", &slabID, &numberOfItems)
+      slabs[slabID] = numberOfItems
+    } else if strings.HasPrefix(line, "END") {
+      break
+    }
+  }
+
+  if err := scanner.Err(); err != nil {
+    return nil, fmt.Errorf("error reading slabs: %v", err)
+  }
+
+  // Get keys from each slab
+  var keys []string
+  for slabID := range slabs {
+    fmt.Fprintf(conn, "stats cachedump %d 0\n", slabID)
+    scanner := bufio.NewScanner(conn)
+    for scanner.Scan() {
+      line := scanner.Text()
+      if strings.HasPrefix(line, "ITEM") {
+        var key string
+        fmt.Sscanf(line, "ITEM %s", &key)
+        keys = append(keys, key)
+      } else if strings.HasPrefix(line, "END") {
+        break
+      }
+    }
+
+    if err := scanner.Err(); err != nil {
+      return nil, fmt.Errorf("error reading keys from slab %d: %v", slabID, err)
+    }
+  }
+
+  return keys, nil
+}
+
 // createIncident sends a request to the Rails API to create an incident
-func createIncident(apiEndpoint, name string, insecureSkipVerify bool, authToken string) (bool, error) {
+func createIncident(apiEndpoint string, incidentData map[string]interface{}, insecureSkipVerify bool) (bool, error) {
   client := resty.New()
   // Configure TLS based on the parameter
   client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: insecureSkipVerify})
 
-  // Define the payload
-  payload := map[string]interface{}{
-    "incident": map[string]string{
-      "name": name,
-    },
-    "auth_token": authToken,
-  }
-
   // Send the request to create the incident
   resp, err := client.R().
     SetHeader("Content-Type", "application/json").
-    SetBody(payload).
+    SetBody(incidentData).
     Post(apiEndpoint)
 
   if err != nil {
@@ -195,13 +215,6 @@ func createIncident(apiEndpoint, name string, insecureSkipVerify bool, authToken
     return false, fmt.Errorf("failed to create incident: %v", errorResponse["errors"])
   }
 
-  log.Printf("Incident created successfully with name: %s", name)
+  log.Printf("Incident created successfully with data: %v", incidentData)
   return true, nil
-}
-
-// cleanName cleans the name to remove any unwanted characters
-func cleanName(name string) string {
-  // Remove any non-alphanumeric characters except spaces
-  re := regexp.MustCompile(`[^a-zA-Z0-9\s]`)
-  return re.ReplaceAllString(name, "")
 }
