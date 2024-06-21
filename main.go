@@ -46,19 +46,18 @@ func readConfig(configFile string) (*Config, error) {
 }
 
 // Function to clean up and validate the value obtained from Memcached
-func cleanValue(value []byte) string {
-  // Convert to string and trim any whitespace or null characters
-  cleaned := strings.TrimSpace(string(value))
-  // Remove any null characters
-  cleaned = strings.ReplaceAll(cleaned, "\x00", "")
-  // Remove any non-ASCII characters (optional)
-  cleaned = strings.Map(func(r rune) rune {
-    if r > 127 {
-      return -1
-    }
-    return r
-  }, cleaned)
-  return cleaned
+func cleanValue(rawValue []byte) string {
+  rawString := string(rawValue)
+  re := regexp.MustCompile(`{.*}`)
+  match := re.FindString(rawString) 
+
+  if match != "" {
+    fmt.Println("Clean JSON:", match)
+    return match
+  } else {
+    fmt.Println("No valid JSON was found")
+    return rawString
+  }
 }
 
 func main() {
@@ -95,9 +94,6 @@ func main() {
           log.Printf("Error getting key %s: %v", key, err)
           continue
         }
-
-        // Clean and verify the value
-        log.Printf("Non cleaned value: %s", item.Value)
 
         // Clean and verify the value
         cleanedValue := cleanValue(item.Value)
