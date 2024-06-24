@@ -88,23 +88,26 @@ func main() {
     for _, key := range keys {
       // Check if the key matches the pattern
       if match, _ := regexp.MatchString(`^rbincident_([a-fA-F0-9\-]+)_incident_([a-fA-F0-9\-]+)$`, key); match {
+        log.Printf("Getting key %s", key)
+
         // Get the value from Memcached
         item, err := mc.Get(key)
+
         if err != nil {
           log.Printf("Error getting key %s: %v", key, err)
           continue
         }
-
-        // Clean and verify the value
-        cleanedValue := cleanValue(item.Value)
-        log.Printf("Cleaned value: %s", cleanedValue)
-
+        // Deserialize escaped JSON
+        var jsonEscaped string
+        err = json.Unmarshal(item.Value, &jsonEscaped)
+        if err != nil {
+            log.Fatalf("Error deserialazing the escaped JSON: %v", err)
+        }
         // Parse the JSON from Memcached
         var incidentData map[string]interface{}
-        err = json.Unmarshal([]byte(cleanedValue), &incidentData)
+        err = json.Unmarshal([]byte(jsonEscaped), &incidentData)
         if err != nil {
-          log.Printf("Error parsing JSON for key %s: %v", key, err)
-          continue
+            log.Fatalf("Error deserializing the JSON: %v", err)
         }
 
         // Add auth_token to the payload
