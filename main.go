@@ -86,8 +86,9 @@ func main() {
     }
 
     for _, key := range keys {
+      log.Printf("Checking key: %s", key)
       // Check if the key matches the pattern
-      if match, _ := regexp.MatchString(`^rb_incident(_[a-fA-F0-9\-]+)?_incident_([a-fA-F0-9\-]+)$`, key); match {
+      if match, _ := regexp.MatchString(`^rbincident(:[a-fA-F0-9\-]+)?:incident:([a-fA-F0-9\-]+)$`, key); match {
         log.Printf("Getting key %s", key)
 
         // Get the value from Memcached
