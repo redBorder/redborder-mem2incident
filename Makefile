@@ -42,7 +42,7 @@ vendor:
 	@go mod vendor
 
 clean:
-	rm -f $(BIN) $(SNORT_CONTROL)
+	rm -f $(BIN)
 	rm -rf vendor/
 
 rpm: clean
