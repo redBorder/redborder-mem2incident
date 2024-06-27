@@ -40,6 +40,7 @@ prefix=%{buildroot}/usr make install
 popd
 install -D -m 0644 resources/systemd/redborder-mem2incident.service %{buildroot}/usr/lib/systemd/system/redborder-mem2incident.service
 
+cp config.yml.default %{buildroot}/etc/redborder-mem2incident/
 
 %clean
 rm -rf %{buildroot}
@@ -57,6 +58,7 @@ mkdir -p /var/log/redborder-mem2incident
 /usr/bin/redborder-mem2incident
 %defattr(644,root,root)
 /usr/lib/systemd/system/redborder-mem2incident.service
+/etc/redborder-mem2incident/config.yml.default
 
 %doc
 

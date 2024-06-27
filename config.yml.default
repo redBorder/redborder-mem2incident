@@ -1,0 +1,5 @@
+memcached_server: "localhost:11211"
+api_endpoint: "https://webui.service/api/v1/incidents"
+loop_interval: 60  # Intervalo en segundos
+insecure_skip_verify: true  # Ignorar la verificación TLS
+auth_token: "your_auth_token_here"
