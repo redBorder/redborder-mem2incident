@@ -37,7 +37,7 @@ coverage:
 	@go tool cover -func coverage.out
 
 vendor:
-	@go mod init
+	@if [ ! -f go.mod ]; then go mod init github.com/redBorder/redborder-mem2incident; fi
 	@go mod tidy
 	@go mod vendor
 

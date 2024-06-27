@@ -13,7 +13,7 @@ redborder-mem2incident
 *.out
 
 # Dependency directories (remove the comment below to include it)
-# vendor/
+vendor/
 
 # Go workspace file
 go.work
@@ -25,3 +25,5 @@ go.work.sum
 # BUILD
 pkgs
 SOURCES
+go.mod
+go.sum
