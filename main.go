@@ -22,11 +22,11 @@ const version = "1.0.0"
 
 // Config structure to hold the configuration
 type Config struct {
-  MemcachedServer    string `yaml:"memcached_server"`
-  ApiEndpoint        string `yaml:"api_endpoint"`
-  LoopInterval       int    `yaml:"loop_interval"`        // Interval in seconds
-  InsecureSkipVerify bool   `yaml:"insecure_skip_verify"` // Ignore TLS verification
-  AuthToken          string `yaml:"auth_token"`           // Authentication token
+  MemcachedServers   []string `yaml:"memcached_servers"`
+  ApiEndpoint        string   `yaml:"api_endpoint"`
+  LoopInterval       int      `yaml:"loop_interval"`        // Interval in seconds
+  InsecureSkipVerify bool     `yaml:"insecure_skip_verify"` // Ignore TLS verification
+  AuthToken          string   `yaml:"auth_token"`           // Authentication token
 }
 
 // Function to read and parse the configuration file
@@ -45,21 +45,6 @@ func readConfig(configFile string) (*Config, error) {
   return &config, nil
 }
 
-// Function to clean up and validate the value obtained from Memcached
-func cleanValue(rawValue []byte) string {
-  rawString := string(rawValue)
-  re := regexp.MustCompile(`{.*}`)
-  match := re.FindString(rawString) 
-
-  if match != "" {
-    fmt.Println("Clean JSON:", match)
-    return match
-  } else {
-    fmt.Println("No valid JSON was found")
-    return rawString
-  }
-}
-
 func main() {
   // Check if the program was called with the "version" argument
   if len(os.Args) > 1 && os.Args[1] == "version" {
@@ -73,19 +58,23 @@ func main() {
     log.Fatalf("Error reading config: %v", err)
   }
 
-  // Create a new Memcached client
-  mc := memcache.New(config.MemcachedServer)
+  // Create a new Memcached client with multiple servers
+  mc := memcache.New(config.MemcachedServers...)
 
   // Infinite loop to keep the service running
   for {
-    // Get all keys from Memcached
-    keys, err := getAllKeysFromMemcached(config.MemcachedServer)
-    if err != nil {
-      log.Printf("Error getting keys: %v", err)
-      continue
+    // Get all keys from all Memcached servers
+    var allKeys []string
+    for _, server := range config.MemcachedServers {
+      keys, err := getAllKeysFromMemcached(server)
+      if err != nil {
+        log.Printf("Error getting keys from server %s: %v", server, err)
+      } else {
+        allKeys = append(allKeys, keys...)
+      }
     }
 
-    for _, key := range keys {
+    for _, key := range allKeys {
       // Check if the key matches the pattern
       if match, _ := regexp.MatchString(`^rbincident(:[a-fA-F0-9\-]+)?:incident:([a-fA-F0-9\-]+)$`, key); match {
         log.Printf("Getting key %s", key)
@@ -97,17 +86,19 @@ func main() {
           log.Printf("Error getting key %s: %v", key, err)
           continue
         }
+
         // Deserialize escaped JSON
         var jsonEscaped string
         err = json.Unmarshal(item.Value, &jsonEscaped)
         if err != nil {
-            log.Fatalf("Error deserialazing the escaped JSON: %v", err)
+          log.Fatalf("Error deserializing the escaped JSON: %v", err)
         }
+
         // Parse the JSON from Memcached
         var incidentData map[string]interface{}
         err = json.Unmarshal([]byte(jsonEscaped), &incidentData)
         if err != nil {
-            log.Fatalf("Error deserializing the JSON: %v", err)
+          log.Fatalf("Error deserializing the JSON: %v", err)
         }
 
         // Add auth_token to the payload
