@@ -4,6 +4,7 @@ import (
   "bufio"
   "crypto/tls"
   "encoding/json"
+  "flag"
   "fmt"
   "log"
   "net"
@@ -52,8 +53,12 @@ func main() {
     return
   }
 
+  // Define a flag for the configuration file
+  configFile := flag.String("c", "config.yml", "configuration file")
+  flag.Parse()
+
   // Read the configuration
-  config, err := readConfig("config.yml")
+  config, err := readConfig(*configFile)
   if err != nil {
     log.Fatalf("Error reading config: %v", err)
   }
