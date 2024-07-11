@@ -135,8 +135,25 @@ func main() {
         if created {
           // Delete the key from Memcached if the incident was created successfully
           err = mc.Delete(key)
+
           if err != nil {
-            log.Printf("Error deleting key %s: %v", key, err)
+            if err == memcache.ErrCacheMiss {
+              // If cache miss, check all servers for the key
+              for _, server := range config.MemcachedServers {
+                mcSingle := memcache.New(server)                
+                err = mcSingle.Delete(key)
+                if err == nil {
+                  log.Printf("Successfully deleted key %s after creating incident", key)
+                  break
+                } else if err != memcache.ErrCacheMiss {
+                  log.Printf("Error getting key %s from server %s: %v", key, server, err)
+                }
+              }
+            }
+            if err != nil {
+              log.Printf("Error deleting key %s: %v", key, err)
+              continue
+            }
           } else {
             log.Printf("Successfully deleted key %s after creating incident", key)
           }
