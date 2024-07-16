@@ -89,7 +89,7 @@ func main() {
 
         if err != nil {
           if err == memcache.ErrCacheMiss {
-            // If cache miss, check all servers for the key
+            // If cache miss check all servers for the key
             for _, server := range config.MemcachedServers {
               mcSingle := memcache.New(server)
               item, err = mcSingle.Get(key)
