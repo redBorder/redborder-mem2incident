@@ -4,6 +4,7 @@
 *.dll
 *.so
 *.dylib
+redborder-mem2incident
 
 # Test binary, built with `go test -c`
 *.test
@@ -12,7 +13,7 @@
 *.out
 
 # Dependency directories (remove the comment below to include it)
-# vendor/
+vendor/
 
 # Go workspace file
 go.work
@@ -20,3 +21,9 @@ go.work.sum
 
 # env file
 .env
+
+# BUILD
+pkgs
+SOURCES
+go.mod
+go.sum

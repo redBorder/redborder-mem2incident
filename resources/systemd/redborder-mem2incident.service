@@ -1,0 +1,10 @@
+[Unit]
+Description=Redborder Mem2Incident Service
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/redborder-mem2incident -c /etc/redborder-mem2incident/config.yml
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
