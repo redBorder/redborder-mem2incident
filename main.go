@@ -59,7 +59,7 @@ func main() {
 
   // Read the configuration
   config, err := readConfig(*configFile)
-  if err != nil {
+  if (err != nil) {
     log.Fatalf("Error reading config: %v", err)
   }
 
@@ -72,7 +72,7 @@ func main() {
     var allKeys []string
     for _, server := range config.MemcachedServers {
       keys, err := getAllKeysFromMemcached(server)
-      if err != nil {
+      if (err != nil) {
         log.Printf("Error getting keys from server %s: %v", server, err)
       } else {
         allKeys = append(allKeys, keys...)
@@ -88,8 +88,24 @@ func main() {
         item, err := mc.Get(key)
 
         if err != nil {
-          log.Printf("Error getting key %s: %v", key, err)
-          continue
+          if err == memcache.ErrCacheMiss {
+            // If cache miss, check all servers for the key
+            for _, server := range config.MemcachedServers {
+              mcSingle := memcache.New(server)
+              item, err = mcSingle.Get(key)
+              if err == nil {
+                log.Printf("Key %s found on server %s", key, server)
+                break
+              } else if err != memcache.ErrCacheMiss {
+                log.Printf("Error getting key %s from server %s: %v", key, server, err)
+              }
+            }
+          }
+
+          if err != nil {
+            log.Printf("Key %s not found on any server: %v", key, err)
+            continue
+          }
         }
 
         // Deserialize escaped JSON
@@ -119,8 +135,25 @@ func main() {
         if created {
           // Delete the key from Memcached if the incident was created successfully
           err = mc.Delete(key)
+
           if err != nil {
-            log.Printf("Error deleting key %s: %v", key, err)
+            if err == memcache.ErrCacheMiss {
+              // If cache miss, check all servers for the key
+              for _, server := range config.MemcachedServers {
+                mcSingle := memcache.New(server)                
+                err = mcSingle.Delete(key)
+                if err == nil {
+                  log.Printf("Successfully deleted key %s after creating incident", key)
+                  break
+                } else if err != memcache.ErrCacheMiss {
+                  log.Printf("Error getting key %s from server %s: %v", key, server, err)
+                }
+              }
+            }
+            if err != nil {
+              log.Printf("Error deleting key %s: %v", key, err)
+              continue
+            }
           } else {
             log.Printf("Successfully deleted key %s after creating incident", key)
           }
