@@ -26,7 +26,7 @@ jobs:
           echo "TAG=$TAG" >> $GITHUB_ENV
         shell: bash
 
-       - name: Check if Tag Exists
+      - name: Check if Tag Exists
         id: check_tag
         run: |
           if git rev-parse "refs/tags/${{ env.TAG }}" >/dev/null 2>&1; then
@@ -58,19 +58,23 @@ jobs:
           docker exec builder bash -c "ln -s /build/sdk9.cfg /etc/mock/default.cfg"
 
       - name: Build RPM using mock
+        if: success()
         run: |
           docker exec builder bash -c "git config --global --add safe.directory /build"
           docker exec builder bash -c "cd /build/ && VERSION=${{ env.TAG }} make rpm"
 
       - name: Copy RPMS
+        if: success()
         run: |
           docker cp builder:/build/packaging/rpm/pkgs/. ./rpms
 
       - name: Delete non-.rpm files
+        if: success()
         run: |
           find ./rpms -type f -not -name '*.rpm' -exec rm {} \;
 
       - name: Release
+        if: success()
         uses: softprops/action-gh-release@v1
         with:
           files: ./rpms/*
