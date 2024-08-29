@@ -319,7 +319,7 @@ func linkIncidents(apiEndpoint string, parentUUID string, childUUID string, auth
 	// Configure TLS based on the parameter
 	client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: insecureSkipVerify})
 
-  // Sanitize the UUIDs by removing any surrounding quotation marks
+        // Sanitize the UUIDs by removing any surrounding quotation marks
 	parentUUID = strings.Trim(parentUUID, "\"")
 	childUUID = strings.Trim(childUUID, "\"")
 
