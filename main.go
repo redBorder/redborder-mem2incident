@@ -160,7 +160,7 @@ func main() {
         }
       }
 
-			// Check if the key matches the pattern to link incidents
+      // Check if the key matches the pattern to link incidents
       if match, _ := regexp.MatchString(`^rbincident:relation:([a-fA-F0-9\-]+)$`, key); match {
         log.Printf("Getting key to link incident %s", key)
 	      
