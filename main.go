@@ -80,7 +80,7 @@ func main() {
     }
 
     for _, key := range allKeys {
-      // Check if the key matches the pattern
+      // Check if the key matches the pattern to create an incident
       if match, _ := regexp.MatchString(`^rbincident(:[a-fA-F0-9\-]+)?:incident:([a-fA-F0-9\-]+)$`, key); match {
         log.Printf("Getting key %s", key)
 
@@ -156,6 +156,72 @@ func main() {
             }
           } else {
             log.Printf("Successfully deleted key %s after creating incident", key)
+          }
+        }
+      }
+
+      // Check if the key matches the pattern to link incidents
+      if match, _ := regexp.MatchString(`^rbincident:relation:([a-fA-F0-9\-]+)$`, key); match {
+        log.Printf("Getting key to link incident %s", key)
+	      
+        // Get the value from Memcached
+        item, err := mc.Get(key)
+
+        if err != nil {
+          if err == memcache.ErrCacheMiss {
+            // If cache miss check all servers for the key
+            for _, server := range config.MemcachedServers {
+              mcSingle := memcache.New(server)
+              item, err = mcSingle.Get(key)
+              if err == nil {
+                log.Printf("Key to link incident %s found on server %s", key, server)
+                break
+              } else if err != memcache.ErrCacheMiss {
+                log.Printf("Error getting key to link incident %s from server %s: %v", key, server, err)
+              }
+            }
+          }
+
+          if err != nil {
+            log.Printf("Key to link incident %s not found on any server: %v", key, err)
+            continue
+          }
+        }
+
+        parentUUID := strings.Split(key, ":")[2]
+        childUUID := string(item.Value)
+
+        // Call the Rails API to link the incident
+        created, err := linkIncidents(config.ApiEndpoint, parentUUID, childUUID, config.AuthToken, config.InsecureSkipVerify)
+        if err != nil {
+          log.Printf("Error linking incident for key %s: %v", key, err)
+          continue
+        }
+
+        if created {
+          // Delete the key from Memcached if the incident was created successfully
+          err = mc.Delete(key)
+
+          if err != nil {
+            if err == memcache.ErrCacheMiss {
+              // If cache miss, check all servers for the key
+              for _, server := range config.MemcachedServers {
+                mcSingle := memcache.New(server)                
+                err = mcSingle.Delete(key)
+                if err == nil {
+                  log.Printf("Successfully deleted key %s after linking incident", key)
+                  break
+                } else if err != memcache.ErrCacheMiss {
+                  log.Printf("Error getting key to link incident %s from server %s: %v", key, server, err)
+                }
+              }
+            }
+            if err != nil {
+              log.Printf("Error deleting key to link incident %s: %v", key, err)
+              continue
+            }
+          } else {
+            log.Printf("Successfully deleted key %s after linking incident", key)
           }
         }
       }
@@ -245,4 +311,44 @@ func createIncident(apiEndpoint string, incidentData map[string]interface{}, ins
 
   log.Printf("Incident created successfully with data: %v", incidentData)
   return true, nil
+}
+
+// linkIncidents sends a request to the Rails API to link incidents
+func linkIncidents(apiEndpoint string, parentUUID string, childUUID string, authToken string, insecureSkipVerify bool) (bool, error) {
+	client := resty.New()
+	// Configure TLS based on the parameter
+	client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: insecureSkipVerify})
+
+        // Sanitize the UUIDs by removing any surrounding quotation marks
+	parentUUID = strings.Trim(parentUUID, "\"")
+	childUUID = strings.Trim(childUUID, "\"")
+
+	linkData := map[string]string{
+		"parent_incident_uuid": parentUUID,
+		"child_incident_uuid":  childUUID,
+		"auth_token":           authToken,
+	}
+
+	// Send the request to link the incidents
+	resp, err := client.R().
+		SetHeader("Content-Type", "application/json").
+		SetBody(linkData).
+		Post(apiEndpoint + "/link")
+
+	if err != nil {
+		return false, err
+	}
+
+	// Check for success response
+	if resp.StatusCode() != 201 {
+		var errorResponse map[string]interface{}
+		if err := json.Unmarshal(resp.Body(), &errorResponse); err != nil {
+			return false, fmt.Errorf("failed to link incidents, status code: %d", resp.StatusCode())
+		}
+		return false, fmt.Errorf("failed to link incidents: %v", errorResponse["errors"])
+	}
+
+	// If everything is successful, return true and nil for error
+	log.Printf("Incidents linked successfully: %s -> %s", parentUUID, childUUID)
+	return true, nil
 }
