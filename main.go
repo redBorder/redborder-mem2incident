@@ -122,6 +122,24 @@ func main() {
           log.Fatalf("Error deserializing the JSON: %v", err)
         }
 
+				// Verifies and assigns the 'domain' field in incidentData based on the value of 'domain'
+				if domainValue, ok := incidentData["domain"]; ok { // Checks if 'domain' exists in the incidentData map
+						domainStr, isString := domainValue.(string) // Tries to cast the value of 'domain' to a string
+
+						if isString && len(domainStr) > 0 { // If 'domain' is a valid string and not empty
+								log.Printf("Assigned sensor_id: %s", domainStr)
+								incidentData["domain"] = domainStr // Assigns the value of 'domain' to the 'domain' field
+						} else {
+								// If 'domain' exists but is empty or not a valid string
+								log.Printf("The domain field is empty or not a string, using default value")
+								incidentData["domain"] = "" // Assigns an empty string as the default value
+						}
+				} else {
+						// If the 'domain' field does not exist in incidentData
+						log.Printf("The domain field is not present in the incident data, using default value")
+						incidentData["domain"] = "" // Assigns an empty string as the default value
+				}
+
         // Add auth_token to the payload
         incidentData["auth_token"] = config.AuthToken
 
