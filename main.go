@@ -7,7 +7,6 @@ import (
   "flag"
   "fmt"
   "log"
-  "net"
   "os"
   "regexp"
   "strings"
