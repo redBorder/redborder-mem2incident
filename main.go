@@ -1,29 +1,30 @@
 package main
 
 import (
-  "bufio"
+  "context"
   "crypto/tls"
   "encoding/json"
   "flag"
   "fmt"
   "log"
-  "net"
   "os"
   "regexp"
   "strings"
   "time"
 
-  "github.com/bradfitz/gomemcache/memcache"
+  "github.com/redis/go-redis/v9"
   "github.com/go-resty/resty/v2"
   "gopkg.in/yaml.v2"
 )
 
-// Program version
-const version = "1.0.0"
+const version = "2.0.0"
 
 // Config structure to hold the configuration
 type Config struct {
-  MemcachedServers   []string `yaml:"memcached_servers"`
+  RedisHosts         []string `yaml:"redis_hosts"`
+  RedisPort          int      `yaml:"redis_port"`
+  RedisPassword      string   `yaml:"redis_password"`
+  RedisDB            int      `yaml:"redis_db"`
   ApiEndpoint        string   `yaml:"api_endpoint"`
   LoopInterval       int      `yaml:"loop_interval"`        // Interval in seconds
   InsecureSkipVerify bool     `yaml:"insecure_skip_verify"` // Ignore TLS verification
@@ -63,99 +64,55 @@ func main() {
     log.Fatalf("Error reading config: %v", err)
   }
 
-  // Create a new Memcached client with multiple servers
-  mc := memcache.New(config.MemcachedServers...)
+  ctx := context.Background()
+  rdb := redis.NewClient(&redis.Options{
+    Addr:     fmt.Sprintf("%s:%d", config.RedisHosts[0], config.RedisPort),
+    Password: config.RedisPassword,
+    DB:       config.RedisDB,
+  })
 
-  // Infinite loop to keep the service running
+  if err := rdb.Ping(ctx).Err(); err != nil {
+    log.Fatalf("Error connecting to Redis: %v", err)
+  }
+
   for {
-    // Get all keys from all Memcached servers
-    var allKeys []string
-    for _, server := range config.MemcachedServers {
-      keys, err := getAllKeysFromMemcached(server)
-      if (err != nil) {
-        log.Printf("Error getting keys from server %s: %v", server, err)
-      } else {
-        allKeys = append(allKeys, keys...)
-      }
+    allKeys, err := getAllKeysFromRedis(ctx, rdb, "rbincident:*")
+    if err != nil {
+      log.Printf("Error fetching keys: %v", err)
+      time.Sleep(time.Duration(config.LoopInterval) * time.Second)
+      continue
     }
 
     for _, key := range allKeys {
       // Check if the key matches the pattern to create an incident
       if match, _ := regexp.MatchString(`^rbincident(:[a-fA-F0-9\-]+)?:incident:([a-fA-F0-9\-]+)$`, key); match {
         log.Printf("Getting key %s", key)
-
-        // Get the value from Memcached
-        item, err := mc.Get(key)
-
-        if err != nil {
-          if err == memcache.ErrCacheMiss {
-            // If cache miss check all servers for the key
-            for _, server := range config.MemcachedServers {
-              mcSingle := memcache.New(server)
-              item, err = mcSingle.Get(key)
-              if err == nil {
-                log.Printf("Key %s found on server %s", key, server)
-                break
-              } else if err != memcache.ErrCacheMiss {
-                log.Printf("Error getting key %s from server %s: %v", key, server, err)
-              }
-            }
-          }
-
-          if err != nil {
-            log.Printf("Key %s not found on any server: %v", key, err)
-            continue
-          }
+        val, err := rdb.Get(ctx, key).Result()
+        if err == redis.Nil {
+          continue
+        } else if err != nil {
+          log.Printf("Error getting key %s: %v", key, err)
+          continue
         }
 
-        // Deserialize escaped JSON
-        var jsonEscaped string
-        err = json.Unmarshal(item.Value, &jsonEscaped)
-        if err != nil {
-          log.Fatalf("Error deserializing the escaped JSON: %v", err)
-        }
-
-        // Parse the JSON from Memcached
         var incidentData map[string]interface{}
-        err = json.Unmarshal([]byte(jsonEscaped), &incidentData)
-        if err != nil {
-          log.Fatalf("Error deserializing the JSON: %v", err)
+        if err := json.Unmarshal([]byte(val), &incidentData); err != nil {
+          log.Printf("Error deserializing JSON: %v", err)
+          continue
         }
 
-        // Add auth_token to the payload
         incidentData["auth_token"] = config.AuthToken
-
-        // Call the Rails API to create the incident
         created, err := createIncident(config.ApiEndpoint, incidentData, config.InsecureSkipVerify)
         if err != nil {
-          log.Printf("Error creating incident for key %s: %v", key, err)
+          log.Printf("Error creating incident: %v", err)
           continue
         }
 
         if created {
-          // Delete the key from Memcached if the incident was created successfully
-          err = mc.Delete(key)
-
-          if err != nil {
-            if err == memcache.ErrCacheMiss {
-              // If cache miss, check all servers for the key
-              for _, server := range config.MemcachedServers {
-                mcSingle := memcache.New(server)                
-                err = mcSingle.Delete(key)
-                if err == nil {
-                  log.Printf("Successfully deleted key %s after creating incident", key)
-                  break
-                } else if err != memcache.ErrCacheMiss {
-                  log.Printf("Error getting key %s from server %s: %v", key, server, err)
-                }
-              }
-            }
-            if err != nil {
-              log.Printf("Error deleting key %s: %v", key, err)
-              continue
-            }
+          if err := rdb.Del(ctx, key).Err(); err != nil {
+            log.Printf("Error deleting key %s: %v", key, err)
           } else {
-            log.Printf("Successfully deleted key %s after creating incident", key)
+            log.Printf("Deleted key %s", key)
           }
         }
       }
@@ -163,65 +120,28 @@ func main() {
       // Check if the key matches the pattern to link incidents
       if match, _ := regexp.MatchString(`^rbincident:relation:([a-fA-F0-9\-]+)$`, key); match {
         log.Printf("Getting key to link incident %s", key)
-	      
-        // Get the value from Memcached
-        item, err := mc.Get(key)
-
-        if err != nil {
-          if err == memcache.ErrCacheMiss {
-            // If cache miss check all servers for the key
-            for _, server := range config.MemcachedServers {
-              mcSingle := memcache.New(server)
-              item, err = mcSingle.Get(key)
-              if err == nil {
-                log.Printf("Key to link incident %s found on server %s", key, server)
-                break
-              } else if err != memcache.ErrCacheMiss {
-                log.Printf("Error getting key to link incident %s from server %s: %v", key, server, err)
-              }
-            }
-          }
-
-          if err != nil {
-            log.Printf("Key to link incident %s not found on any server: %v", key, err)
-            continue
-          }
+        val, err := rdb.Get(ctx, key).Result()
+        if err == redis.Nil {
+          continue
+        } else if err != nil {
+          log.Printf("Error getting key: %v", err)
+          continue
         }
 
         parentUUID := strings.Split(key, ":")[2]
-        childUUID := string(item.Value)
+        childUUID := strings.Trim(val, "\"")
 
-        // Call the Rails API to link the incident
         created, err := linkIncidents(config.ApiEndpoint, parentUUID, childUUID, config.AuthToken, config.InsecureSkipVerify)
         if err != nil {
-          log.Printf("Error linking incident for key %s: %v", key, err)
+          log.Printf("Error linking incidents: %v", err)
           continue
         }
 
         if created {
-          // Delete the key from Memcached if the incident was created successfully
-          err = mc.Delete(key)
-
-          if err != nil {
-            if err == memcache.ErrCacheMiss {
-              // If cache miss, check all servers for the key
-              for _, server := range config.MemcachedServers {
-                mcSingle := memcache.New(server)                
-                err = mcSingle.Delete(key)
-                if err == nil {
-                  log.Printf("Successfully deleted key %s after linking incident", key)
-                  break
-                } else if err != memcache.ErrCacheMiss {
-                  log.Printf("Error getting key to link incident %s from server %s: %v", key, server, err)
-                }
-              }
-            }
-            if err != nil {
-              log.Printf("Error deleting key to link incident %s: %v", key, err)
-              continue
-            }
+          if err := rdb.Del(ctx, key).Err(); err != nil {
+            log.Printf("Error deleting key: %v", err)
           } else {
-            log.Printf("Successfully deleted key %s after linking incident", key)
+            log.Printf("Deleted key %s after linking", key)
           }
         }
       }
@@ -233,54 +153,23 @@ func main() {
   }
 }
 
-// getAllKeysFromMemcached retrieves all keys from Memcached using a direct TCP connection
-func getAllKeysFromMemcached(memcachedServer string) ([]string, error) {
-  conn, err := net.Dial("tcp", memcachedServer)
-  if err != nil {
-    return nil, fmt.Errorf("failed to connect to memcached: %v", err)
-  }
-  defer conn.Close()
-
-  // Get the list of slabs
-  fmt.Fprintf(conn, "stats items\n")
-  scanner := bufio.NewScanner(conn)
-  slabs := make(map[int]int)
-  for scanner.Scan() {
-    line := scanner.Text()
-    if strings.HasPrefix(line, "STAT items:") {
-      var slabID, numberOfItems int
-      fmt.Sscanf(line, "STAT items:%d:number %d", &slabID, &numberOfItems)
-      slabs[slabID] = numberOfItems
-    } else if strings.HasPrefix(line, "END") {
+// getAllKeysFromRedis retrieves all keys from Redis that match the given pattern
+func getAllKeysFromRedis(ctx context.Context, rdb *redis.Client, pattern string) ([]string, error) {
+  var cursor uint64
+  var keys []string
+  
+  for {
+    k, c, err := rdb.Scan(ctx, cursor, pattern, 100).Result()
+    if err != nil {
+      return nil, err
+    }
+    keys = append(keys, k...)
+    cursor = c
+    if cursor == 0 {
       break
     }
   }
-
-  if err := scanner.Err(); err != nil {
-    return nil, fmt.Errorf("error reading slabs: %v", err)
-  }
-
-  // Get keys from each slab
-  var keys []string
-  for slabID := range slabs {
-    fmt.Fprintf(conn, "stats cachedump %d 0\n", slabID)
-    scanner := bufio.NewScanner(conn)
-    for scanner.Scan() {
-      line := scanner.Text()
-      if strings.HasPrefix(line, "ITEM") {
-        var key string
-        fmt.Sscanf(line, "ITEM %s", &key)
-        keys = append(keys, key)
-      } else if strings.HasPrefix(line, "END") {
-        break
-      }
-    }
-
-    if err := scanner.Err(); err != nil {
-      return nil, fmt.Errorf("error reading keys from slab %d: %v", slabID, err)
-    }
-  }
-
+  
   return keys, nil
 }
 
